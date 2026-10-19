@@ -2,7 +2,7 @@
 
 **Project:** cs457-tictactoe
 **Author:** Jake VanAllen
-**Sprint:** 1 (Protocol and FSM Design)
+**Sprint:** 1 (Protocol and FSM Design), revised in Sprint 2 for series play and non-blocking I/O
 **Target Server Domain:** `server.vanallen.edu`
 
 This document defines the application-layer protocol spoken between the Tic-Tac-Toe server and its two clients. It is the single source of truth for message structure, framing, validation, and connection termination. Any code that reads or writes protocol messages, whether written by hand or generated with AI assistance, must conform to this document exactly.
@@ -153,17 +153,19 @@ Sent to the first client after its `CONNECT` is accepted, while no opponent is c
 
 ### 3.4 GAME_START (Server to each Client)
 
-Sent to both clients once the second `CONNECT` is accepted. Each client receives its own copy with its own assignment. Roles follow connection order: the first client to connect is `Player_1` and plays `X`, the second is `Player_2` and plays `O`. `X` always moves first.
+Sent to both clients at the start of every round: once the second `CONNECT` is accepted, and again after each 3 second intermission while both players remain connected. Each client receives its own copy with its own assignment. Player IDs follow connection order and stay fixed for the whole series: the first client to connect is `Player_1`, the second is `Player_2`. Marks alternate by round. `Player_1` plays `X` in odd rounds and `O` in even rounds. `X` always moves first, so the first move alternates between the players.
 
 | Payload field | Type | Constraints |
 |---|---|---|
 | `your_id` | string | `"Player_1"` or `"Player_2"`. The client uses this as its `player_id` on every later message. |
 | `your_mark` | string | `"X"` or `"O"`. |
 | `opponent_alias` | string | The other player's alias. |
-| `first_turn` | string | Always `"Player_1"`. |
+| `first_turn` | string | ID of the player holding `X` this round. |
+| `round` | integer | Round number in the series, starting at 1. |
+| `scores` | object | `{"Player_1": int, "Player_2": int, "draws": int}`, the series totals before this round. |
 
 ```json
-{"msg_type":"GAME_START","player_id":"SERVER","payload":{"your_id":"Player_1","your_mark":"X","opponent_alias":"Bob","first_turn":"Player_1"},"timestamp":1727000003}
+{"msg_type":"GAME_START","player_id":"SERVER","payload":{"your_id":"Player_1","your_mark":"X","opponent_alias":"Bob","first_turn":"Player_1","round":1,"scores":{"Player_1":0,"Player_2":0,"draws":0}},"timestamp":1727000003}
 ```
 
 A `STATE_UPDATE` containing the empty board immediately follows every `GAME_START`.
@@ -191,7 +193,7 @@ A rejected move does not change the board and does not change whose turn it is.
 
 ### 3.6 STATE_UPDATE (Server to both Clients)
 
-Sent after every accepted move, and once after `GAME_START` with an empty board.
+Sent after every accepted move, once after each `GAME_START` with an empty board, and once at the end of a round with the final board.
 
 | Payload field | Type | Constraints |
 |---|---|---|
@@ -199,12 +201,14 @@ Sent after every accepted move, and once after `GAME_START` with an empty board.
 | `active_player` | string or null | ID of the player who moves next. `null` when the game has ended. |
 | `move_number` | integer | Count of accepted moves so far, 0 to 9. |
 | `last_move` | object or null | `{"player_id": string, "row": int, "col": int}`, or `null` before the first move. |
+| `round` | integer | Current round number. |
+| `scores` | object | Current series totals, in the same format as `GAME_START`. |
 
 ```json
-{"msg_type":"STATE_UPDATE","player_id":"SERVER","payload":{"board":[["-","-","X"],["-","-","-"],["-","-","-"]],"active_player":"Player_2","move_number":1,"last_move":{"player_id":"Player_1","row":0,"col":2}},"timestamp":1727000005}
+{"msg_type":"STATE_UPDATE","player_id":"SERVER","payload":{"board":[["-","-","X"],["-","-","-"],["-","-","-"]],"active_player":"Player_2","move_number":1,"last_move":{"player_id":"Player_1","row":0,"col":2},"round":1,"scores":{"Player_1":0,"Player_2":0,"draws":0}},"timestamp":1727000005}
 ```
 
-The game is a single match, so no running score is tracked. The outcome is reported in `GAME_OVER`.
+Because every `STATE_UPDATE` carries the scoreboard, a client always displays scores that match the board it is showing.
 
 ### 3.7 ERROR (Server to Client)
 
@@ -248,7 +252,7 @@ Sent by a client that is quitting intentionally, immediately before it closes it
 
 ### 3.9 GAME_OVER (Server to both Clients)
 
-Sent once when the match ends. The server closes both connections after sending it.
+Sent to both players at the end of every round, and to the remaining player when the series ends because the other player left. If `series_continues` is `true`, both connections stay open and the next round's `GAME_START` follows after a 3 second intermission. If it is `false`, the server closes the connection after sending.
 
 | Payload field | Type | Constraints |
 |---|---|---|
@@ -257,9 +261,12 @@ Sent once when the match ends. The server closes both connections after sending 
 | `winning_line` | array or null | Three `[row, col]` pairs for a `WIN`, otherwise `null`. |
 | `final_board` | array | Board at the moment the game ended. |
 | `reason` | string | Human-readable summary, for example `"Player_2 disconnected"`. |
+| `round` | integer | The round this result belongs to. |
+| `scores` | object | Series totals including this round's result. |
+| `series_continues` | boolean | `true` if another round will start, `false` if the series is over. |
 
 ```json
-{"msg_type":"GAME_OVER","player_id":"SERVER","payload":{"result":"WIN","winner":"Player_1","winning_line":[[0,0],[1,1],[2,2]],"final_board":[["X","O","-"],["O","X","-"],["-","-","X"]],"reason":"Player_1 completed a diagonal"},"timestamp":1727000030}
+{"msg_type":"GAME_OVER","player_id":"SERVER","payload":{"result":"WIN","winner":"Player_1","winning_line":[[0,0],[1,1],[2,2]],"final_board":[["X","O","-"],["O","X","-"],["-","-","X"]],"reason":"Player_1 completed a diagonal","round":1,"scores":{"Player_1":1,"Player_2":0,"draws":0},"series_continues":true},"timestamp":1727000030}
 ```
 
 The server checks for a win before checking for a draw, so a move that fills the last cell and completes a line is reported as a `WIN`.
@@ -268,21 +275,21 @@ The server checks for a win before checking for a draw, so a move that fills the
 
 ## 4. Example Session on the Wire
 
-A short game from connection to forfeit, shown as one frame per line. On the wire each line ends with `\n` and the frames run together as a single stream per connection.
+A short series from connection to forfeit during round 1, shown as one frame per line. On the wire each line ends with `\n` and the frames run together as a single stream per connection.
 
 ```
 C1 -> S  {"msg_type":"CONNECT","player_id":null,"payload":{"alias":"Alice"},"timestamp":1727000000}
 S -> C1  {"msg_type":"LOBBY_WAIT","player_id":"SERVER","payload":{"players_connected":1,"message":"Waiting for an opponent"},"timestamp":1727000000}
 C2 -> S  {"msg_type":"CONNECT","player_id":null,"payload":{"alias":"Bob"},"timestamp":1727000003}
-S -> C1  {"msg_type":"GAME_START","player_id":"SERVER","payload":{"your_id":"Player_1","your_mark":"X","opponent_alias":"Bob","first_turn":"Player_1"},"timestamp":1727000003}
-S -> C2  {"msg_type":"GAME_START","player_id":"SERVER","payload":{"your_id":"Player_2","your_mark":"O","opponent_alias":"Alice","first_turn":"Player_1"},"timestamp":1727000003}
-S -> C*  {"msg_type":"STATE_UPDATE","player_id":"SERVER","payload":{"board":[["-","-","-"],["-","-","-"],["-","-","-"]],"active_player":"Player_1","move_number":0,"last_move":null},"timestamp":1727000003}
+S -> C1  {"msg_type":"GAME_START","player_id":"SERVER","payload":{"your_id":"Player_1","your_mark":"X","opponent_alias":"Bob","first_turn":"Player_1","round":1,"scores":{"Player_1":0,"Player_2":0,"draws":0}},"timestamp":1727000003}
+S -> C2  {"msg_type":"GAME_START","player_id":"SERVER","payload":{"your_id":"Player_2","your_mark":"O","opponent_alias":"Alice","first_turn":"Player_1","round":1,"scores":{"Player_1":0,"Player_2":0,"draws":0}},"timestamp":1727000003}
+S -> C*  {"msg_type":"STATE_UPDATE","player_id":"SERVER","payload":{"board":[["-","-","-"],["-","-","-"],["-","-","-"]],"active_player":"Player_1","move_number":0,"last_move":null,"round":1,"scores":{"Player_1":0,"Player_2":0,"draws":0}},"timestamp":1727000003}
 C2 -> S  {"msg_type":"MOVE","player_id":"Player_2","payload":{"row":1,"col":1},"timestamp":1727000004}
 S -> C2  {"msg_type":"ERROR","player_id":"SERVER","payload":{"code":"OUT_OF_TURN","detail":"It is Player_1's turn","fatal":false},"timestamp":1727000004}
 C1 -> S  {"msg_type":"MOVE","player_id":"Player_1","payload":{"row":0,"col":2},"timestamp":1727000005}
-S -> C*  {"msg_type":"STATE_UPDATE","player_id":"SERVER","payload":{"board":[["-","-","X"],["-","-","-"],["-","-","-"]],"active_player":"Player_2","move_number":1,"last_move":{"player_id":"Player_1","row":0,"col":2}},"timestamp":1727000005}
+S -> C*  {"msg_type":"STATE_UPDATE","player_id":"SERVER","payload":{"board":[["-","-","X"],["-","-","-"],["-","-","-"]],"active_player":"Player_2","move_number":1,"last_move":{"player_id":"Player_1","row":0,"col":2},"round":1,"scores":{"Player_1":0,"Player_2":0,"draws":0}},"timestamp":1727000005}
 C2 -> S  {"msg_type":"DISCONNECT","player_id":"Player_2","payload":{"reason":"user quit"},"timestamp":1727000020}
-S -> C1  {"msg_type":"GAME_OVER","player_id":"SERVER","payload":{"result":"FORFEIT","winner":"Player_1","winning_line":null,"final_board":[["-","-","X"],["-","-","-"],["-","-","-"]],"reason":"Player_2 disconnected"},"timestamp":1727000020}
+S -> C1  {"msg_type":"GAME_OVER","player_id":"SERVER","payload":{"result":"FORFEIT","winner":"Player_1","winning_line":null,"final_board":[["-","-","X"],["-","-","-"],["-","-","-"]],"reason":"Player_2 disconnected","round":1,"scores":{"Player_1":1,"Player_2":0,"draws":0},"series_continues":false},"timestamp":1727000020}
 ```
 
 `C*` means the server sends an identical frame to both clients.
@@ -314,24 +321,25 @@ Without this check, the loop would call `recv()` forever on a closed socket, rec
 
 ### 5.3 Abrupt Termination (RST, Crash, Link Failure)
 
-If a client is killed (`kill -9`), loses power, or loses its network path (for example, a CML link is cut), no FIN is sent. The server detects this when a socket operation fails. The following exceptions are caught around every `recv()` and `sendall()` call and converted into `CLIENT_DISCONNECTED`:
+If a client is killed (`kill -9`), loses power, or loses its network path (for example, a CML link is cut), no FIN is sent. The server detects this when a socket operation fails. The following exceptions are caught around every `recv()` and `send()` call and converted into `CLIENT_DISCONNECTED`:
 
 | Exception | Meaning |
 |---|---|
 | `ConnectionResetError` | The peer sent a TCP RST. |
 | `BrokenPipeError` | The server wrote to a socket whose peer has already closed. |
 | `ConnectionAbortedError` | The local stack aborted the connection. |
-| `TimeoutError` / `socket.timeout` | No data within the configured idle timeout. |
+| `TimeoutError` | TCP keepalive probes to the peer went unanswered. |
 
-A silent link failure produces no packets at all, so without a timeout the server could wait on `recv()` forever. Every client socket therefore uses an idle timeout of **120 seconds**. A timeout is treated as an abrupt disconnect.
+A silent link failure produces no packets at all. An application idle timeout cannot detect it reliably, because the waiting player legitimately sends nothing while the opponent thinks. Every client socket therefore enables **TCP keepalive** (first probe after 30 seconds idle, then every 10 seconds, giving up after 3 missed probes), so a dead peer is detected within about 60 seconds. Separately, the active player has a **120 second turn limit**. If no valid `MOVE` arrives in time, the server treats it as a disconnect of that player. Both cases are handled as an abrupt disconnect. See `concurrency_design.md` section 3.6.
 
 ### 5.4 Server Response to a Disconnect
 
 | Game state when the disconnect occurs | Server action |
 |---|---|
 | Waiting for players, lone player leaves | Remove the player, close the socket, and return to waiting with zero players. No `GAME_OVER` is sent. |
-| Game in progress | Send `GAME_OVER` with `result: "FORFEIT"` and the remaining player as `winner` to the remaining client, then close both sockets. |
-| Game already over | Close the socket. No further messages are sent. |
+| Round in progress | Award the round to the remaining player. Send `GAME_OVER` with `result: "FORFEIT"`, the remaining player as `winner`, final `scores`, and `series_continues: false`, then close both sockets. |
+| Intermission between rounds | Send the same `GAME_OVER` `FORFEIT` with `series_continues: false`, but leave `scores` unchanged, since the last round was already scored. Then close both sockets. |
+| Series already over | Close the socket. No further messages are sent. |
 
 If sending `GAME_OVER` to the remaining player also fails, the server logs the failure, closes both sockets, and resets without retrying.
 
@@ -339,9 +347,11 @@ If sending `GAME_OVER` to the remaining player also fails, the server logs the f
 
 If the client's `recv()` returns `b""` or raises one of the exceptions above before a `GAME_OVER` arrives, the client prints that the connection to the server was lost and exits cleanly. Clients never attempt to reconnect to a game in progress.
 
-### 5.6 Normal End of Game and Reset
+### 5.6 End of a Round and End of the Series
 
-After sending `GAME_OVER`, the server closes both client sockets, clears the board, releases both player slots, and returns to waiting for players. The listening socket stays open throughout, so a new pair of clients can connect and play the next round without restarting the server. Each client closes its own socket when it receives `GAME_OVER`. Either side may close first, and both orders are handled by the EOF rule.
+When a round ends with a win or draw, the server sends `GAME_OVER` with `series_continues: true` and keeps both connections open. After a 3 second intermission it clears the board, swaps marks, and sends a new `GAME_START`. Clients keep their sockets open and wait for it.
+
+The series ends only when a player leaves. The remaining player receives `GAME_OVER` with `series_continues: false`, and the server closes both client sockets, resets the board, seats, round, and scores, and returns to waiting for players. The listening socket stays open throughout, so a new pair of clients can start a new series without restarting the server. A client closes its own socket when it receives `GAME_OVER` with `series_continues: false`. Either side may close first, and both orders are handled by the EOF rule.
 
 ---
 

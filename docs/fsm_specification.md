@@ -2,8 +2,8 @@
 
 **Project:** cs457-tictactoe
 **Author:** Jake VanAllen
-**Sprint:** 1 (Protocol and FSM Design)
-**Companion document:** [`protocol_blueprint.md`](protocol_blueprint.md)
+**Sprint:** 1 (Protocol and FSM Design), revised in Sprint 2 for series play
+**Companion documents:** [`protocol_blueprint.md`](protocol_blueprint.md), [`concurrency_design.md`](concurrency_design.md)
 
 This document defines the server-side state machine that governs the Tic-Tac-Toe game engine. The server is the only component that holds game state. Clients send requests and render what the server tells them. Every message type, field, and error code referenced here is defined in `protocol_blueprint.md`.
 
@@ -23,22 +23,25 @@ stateDiagram-v2
     WAITING_FOR_PLAYERS --> WAITING_FOR_PLAYERS : lobby player disconnects, free seat
     WAITING_FOR_PLAYERS --> GAME_START : 2nd valid CONNECT, seat Player_2 as O
 
-    GAME_START --> PLAYER_TURN : send GAME_START to each client, broadcast empty STATE_UPDATE, active is Player_1
+    GAME_START --> PLAYER_TURN : send GAME_START to each client, broadcast empty STATE_UPDATE, active is the player holding X
     GAME_START --> GAME_OVER : CLIENT_DISCONNECTED, FORFEIT to remaining player
 
     PLAYER_TURN --> EVALUATE_MOVE : MOVE received from either seated player
     PLAYER_TURN --> PLAYER_TURN : malformed frame or unknown type, send ERROR, turn unchanged
     PLAYER_TURN --> PLAYER_TURN : 3rd client CONNECT, send fatal ERROR GAME_FULL to that client only
-    PLAYER_TURN --> GAME_OVER : CLIENT_DISCONNECTED by DISCONNECT, EOF, RST, or timeout, FORFEIT to opponent
+    PLAYER_TURN --> GAME_OVER : CLIENT_DISCONNECTED by DISCONNECT, EOF, RST, keepalive failure, or turn timeout, FORFEIT to opponent
 
     EVALUATE_MOVE --> PLAYER_TURN : rejected as OUT_OF_TURN, PLAYER_MISMATCH, INVALID_COORDINATES, or CELL_OCCUPIED, send ERROR to sender, turn unchanged
     EVALUATE_MOVE --> PLAYER_TURN : accepted with no win and no draw, switch active player, broadcast STATE_UPDATE
     EVALUATE_MOVE --> GAME_OVER : accepted and completes a line, result WIN
     EVALUATE_MOVE --> GAME_OVER : accepted and fills board with no line, result DRAW
 
-    GAME_OVER --> CLEANUP : final STATE_UPDATE and GAME_OVER sent to connected clients
+    GAME_OVER --> GAME_OVER : WIN or DRAW, update scores, broadcast final STATE_UPDATE and GAME_OVER with series_continues true, start 3 s intermission
+    GAME_OVER --> GAME_OVER : MOVE or 3rd client CONNECT during intermission, send ERROR
+    GAME_OVER --> GAME_START : intermission ends with both players seated, clear board, swap marks, round + 1
+    GAME_OVER --> CLEANUP : FORFEIT, or a player leaves during intermission, send GAME_OVER with series_continues false
 
-    CLEANUP --> WAITING_FOR_PLAYERS : close client sockets, clear board, free both seats, ready for next round
+    CLEANUP --> WAITING_FOR_PLAYERS : close client sockets, clear board, free both seats, reset scores, ready for a new series
 ```
 
 ---
@@ -56,6 +59,12 @@ The FSM operates on a single game context. These values are created in `INIT`, s
 | `active_player` | string or null | null | ID of the player allowed to move. |
 | `move_number` | integer | 0 | Count of accepted moves. |
 | `pending_move` | object or null | null | The `MOVE` currently being evaluated. Only set in `EVALUATE_MOVE`. |
+| `round` | integer | 1 | Number of the current or most recent round in the series. |
+| `scores` | object | `{"Player_1":0,"Player_2":0,"draws":0}` | Rounds won by each player, plus drawn rounds. |
+| `marks` | map of player ID to mark | `Player_1`: `X`, `Player_2`: `O` | Mark held by each player this round. Swapped at each new round. |
+| `result` | string or null | null | `WIN`, `DRAW`, or `FORFEIT` for the round just decided. |
+| `next_round_at` | time or null | null | Deadline for the intermission between rounds. |
+| `turn_deadline` | time or null | null | Deadline for the active player's move, 120 seconds after the turn begins. |
 
 ---
 
@@ -65,13 +74,13 @@ The FSM operates on a single game context. These values are created in `INIT`, s
 |---|---|---|---|
 | `INIT` | Create the listening socket, bind to port 5555, start listening, and initialize the game context. | None. No clients are connected yet. | Socket bound successfully, or bind failure ends the process. |
 | `WAITING_FOR_PLAYERS` | Lobby. Accept connections and seat players in connection order. | `CONNECT`, `DISCONNECT` | A second valid `CONNECT` fills both seats. |
-| `GAME_START` | Transitional. Announce the match, assign roles, and send the empty board. | None. The server only sends in this state. | All start messages sent, or a seated client disconnects. |
+| `GAME_START` | Transitional. Announce the round, assign roles and marks, and send the empty board. | None. The server only sends in this state. | All start messages sent, or a seated client disconnects. |
 | `PLAYER_TURN` | Wait for the active player's move. | `MOVE`, `DISCONNECT` | A `MOVE` arrives, or a seated client disconnects. |
 | `EVALUATE_MOVE` | Transitional. Validate the pending move, apply it, and check for a win or draw. | None. The server is processing one move. | Move rejected, move accepted with play continuing, or game decided. |
-| `GAME_OVER` | Transitional. Send the final outcome to every still-connected client. | None. | Outcome sent. |
+| `GAME_OVER` | Report the round result and scores. After a `WIN` or `DRAW`, hold here for the 3 second intermission before the next round. | `DISCONNECT`. A `MOVE` receives `NOT_IN_GAME`, and a new `CONNECT` receives `GAME_FULL`. | Intermission ends (next round), or the series ends because a player left. |
 | `CLEANUP` | Close client sockets, reset the game context, and keep the listening socket open. | None. | Reset complete. |
 
-`GAME_START`, `EVALUATE_MOVE`, `GAME_OVER`, and `CLEANUP` are transitional states. The server passes through each of them while handling a single event and never waits for network input while in them.
+`GAME_START`, `EVALUATE_MOVE`, and `CLEANUP` are transitional states. The server passes through each of them while handling a single event and never waits for network input while in them.
 
 ---
 
@@ -88,18 +97,22 @@ Each row is one arrow in the diagram. The guard is the condition that must be tr
 | T5 | `WAITING_FOR_PLAYERS` | Bad frame | Fails envelope validation, or `MOVE` sent before game | Send `ERROR` (`MALFORMED_MESSAGE`, `UNKNOWN_MSG_TYPE`, or `NOT_IN_GAME`). | `WAITING_FOR_PLAYERS` |
 | T6 | `WAITING_FOR_PLAYERS` | `CLIENT_DISCONNECTED` | Seated lobby player leaves | Close socket, free the seat. No `GAME_OVER`. | `WAITING_FOR_PLAYERS` |
 | T7 | `WAITING_FOR_PLAYERS` | `CONNECT` | Valid alias, `Player_1` seated | Seat sender as `Player_2` with mark `O`. | `GAME_START` |
-| T8 | `GAME_START` | Entry | Both clients reachable | Send each client its own `GAME_START`. Broadcast `STATE_UPDATE` with empty board. Set `active_player` to `Player_1`. | `PLAYER_TURN` |
+| T8 | `GAME_START` | Entry | Both clients reachable | Send each client its own `GAME_START` with `round` and `scores`. Broadcast `STATE_UPDATE` with empty board. Set `active_player` to the player holding `X` and start `turn_deadline`. | `PLAYER_TURN` |
 | T9 | `GAME_START` | `CLIENT_DISCONNECTED` | A send fails or a client drops during setup | Record `FORFEIT`, winner is the remaining player. | `GAME_OVER` |
 | T10 | `PLAYER_TURN` | `MOVE` | Sender is a seated player | Store as `pending_move`. | `EVALUATE_MOVE` |
 | T11 | `PLAYER_TURN` | Bad frame | Fails envelope validation or wrong type | Send `ERROR` to sender only. Board and turn unchanged. | `PLAYER_TURN` |
 | T12 | `PLAYER_TURN` | `CONNECT` | Sender is a new, unseated connection | Send `ERROR` `GAME_FULL` with `fatal: true`, close that socket only. | `PLAYER_TURN` |
-| T13 | `PLAYER_TURN` | `CLIENT_DISCONNECTED` | A seated player sends `DISCONNECT`, hits EOF, raises a socket exception, or times out | Record `FORFEIT`, winner is the opponent. | `GAME_OVER` |
+| T13 | `PLAYER_TURN` | `CLIENT_DISCONNECTED` | A seated player sends `DISCONNECT`, hits EOF, raises a socket exception, fails keepalive, or lets `turn_deadline` pass | Record `FORFEIT`, winner is the opponent. Add 1 to the opponent's score. | `GAME_OVER` |
 | T14 | `EVALUATE_MOVE` | Validation | Any check in the move validation order fails | Send `ERROR` to sender with the matching code. Clear `pending_move`. Board and `active_player` unchanged. | `PLAYER_TURN` |
-| T15 | `EVALUATE_MOVE` | Validation | Move valid, no winning line, board not full | Apply mark, increment `move_number`, switch `active_player`, broadcast `STATE_UPDATE`. | `PLAYER_TURN` |
-| T16 | `EVALUATE_MOVE` | Validation | Move valid and completes one of the 8 lines | Apply mark, record `WIN` and the winning line. | `GAME_OVER` |
-| T17 | `EVALUATE_MOVE` | Validation | Move valid, no winning line, all 9 cells filled | Apply mark, record `DRAW`. | `GAME_OVER` |
-| T18 | `GAME_OVER` | Entry | None | Broadcast final `STATE_UPDATE` with `active_player: null` (WIN or DRAW only), then `GAME_OVER` to every connected client. | `CLEANUP` |
-| T19 | `CLEANUP` | Entry | None | Close both client sockets, reset context to initial values, keep listening socket open. | `WAITING_FOR_PLAYERS` |
+| T15 | `EVALUATE_MOVE` | Validation | Move valid, no winning line, board not full | Apply mark, increment `move_number`, switch `active_player`, restart `turn_deadline`, broadcast `STATE_UPDATE`. | `PLAYER_TURN` |
+| T16 | `EVALUATE_MOVE` | Validation | Move valid and completes one of the 8 lines | Apply mark, record `WIN` and the winning line. Add 1 to the winner's score. | `GAME_OVER` |
+| T17 | `EVALUATE_MOVE` | Validation | Move valid, no winning line, all 9 cells filled | Apply mark, record `DRAW`. Add 1 to `draws`. | `GAME_OVER` |
+| T18 | `GAME_OVER` | Entry | Result is `WIN` or `DRAW` | Broadcast final `STATE_UPDATE` with `active_player: null`, then `GAME_OVER` with `scores` and `series_continues: true`. Clear `turn_deadline`, set `next_round_at` to 3 seconds from now. | `GAME_OVER` |
+| T19 | `CLEANUP` | Entry | None | Close both client sockets, reset context to initial values including `scores` and `round`, keep listening socket open. | `WAITING_FOR_PLAYERS` |
+| T20 | `GAME_OVER` | Entry | Result is `FORFEIT` | Send `GAME_OVER` with final `scores` and `series_continues: false` to the remaining player, marked to close after sending. | `CLEANUP` |
+| T21 | `GAME_OVER` | Timer | `next_round_at` reached and both players seated | Clear board, reset `move_number`, swap `marks`, increment `round`. | `GAME_START` |
+| T22 | `GAME_OVER` | `CLIENT_DISCONNECTED` | A player leaves during the intermission | Send `GAME_OVER` with `result: "FORFEIT"`, unchanged `scores`, and `series_continues: false` to the remaining player. No point is awarded, since the last round was already scored. | `CLEANUP` |
+| T23 | `GAME_OVER` | `MOVE`, `CONNECT`, or bad frame | During the intermission | `MOVE` receives `ERROR` `NOT_IN_GAME`. A new connection's `CONNECT` receives fatal `ERROR` `GAME_FULL`. Bad frames receive `MALFORMED_MESSAGE` or `UNKNOWN_MSG_TYPE`. Scores and timer unchanged. | `GAME_OVER` |
 
 ---
 
@@ -136,10 +149,13 @@ Because the win check runs before the draw check, a ninth move that also complet
 | Lone player leaves the lobby | `WAITING_FOR_PLAYERS` | Free the seat. No `GAME_OVER`. | `WAITING_FOR_PLAYERS` |
 | Player sends `DISCONNECT` mid-game | `PLAYER_TURN` | `GAME_OVER` `FORFEIT` to opponent, then cleanup. | `GAME_OVER` then `CLEANUP` |
 | Player's process exits without `DISCONNECT` (`recv()` returns `b""`) | `PLAYER_TURN` | Same as above. | `GAME_OVER` then `CLEANUP` |
-| Player crashes or CML link is cut (`ConnectionResetError`, `BrokenPipeError`, or 120 second timeout) | `PLAYER_TURN` | Same as above. | `GAME_OVER` then `CLEANUP` |
+| Player crashes or CML link is cut (`ConnectionResetError`, `BrokenPipeError`, or keepalive failure) | `PLAYER_TURN` | Same as above. | `GAME_OVER` then `CLEANUP` |
+| Active player does not move within 120 seconds | `PLAYER_TURN` | Treated as a disconnect of that player. `FORFEIT` to the opponent. | `GAME_OVER` then `CLEANUP` |
 | Both players drop at the same time | `PLAYER_TURN` | First detected drop triggers `FORFEIT`. Sending `GAME_OVER` to the other also fails, so the server logs it and proceeds. | `GAME_OVER` then `CLEANUP` |
 | Third client connects during a game | `PLAYER_TURN` | Fatal `ERROR` `GAME_FULL` to the newcomer only. The running game is not affected. | `PLAYER_TURN` |
-| Game ends normally | `EVALUATE_MOVE` | `GAME_OVER` to both, close sockets, reset context. | `WAITING_FOR_PLAYERS` for the next round |
+| Round ends with a win or draw | `EVALUATE_MOVE` | Scores updated. Final `STATE_UPDATE` and `GAME_OVER` to both. Connections stay open. | `GAME_OVER`, then `GAME_START` after 3 seconds |
+| Player moves during the intermission | `GAME_OVER` | `ERROR` `NOT_IN_GAME`. Scores and timer unchanged. | `GAME_OVER` |
+| Player leaves during the intermission | `GAME_OVER` | `GAME_OVER` `FORFEIT` with `series_continues: false` to the remaining player. No score change. | `CLEANUP` |
 
 ---
 
@@ -152,13 +168,16 @@ Every disconnect path produces one internal event, `CLIENT_DISCONNECTED(player_i
 | Graceful application quit | A `DISCONNECT` message arrives. |
 | Clean TCP close (FIN) | `recv()` returns `b""` (EOF). |
 | Abrupt reset (RST) | `ConnectionResetError` or `ConnectionAbortedError` is raised. |
-| Write to a closed peer | `BrokenPipeError` is raised on `sendall()`. |
-| Silent link failure | No data for 120 seconds raises `socket.timeout`. |
+| Write to a closed peer | `BrokenPipeError` is raised on `send()`. |
+| Silent link failure | TCP keepalive probes go unanswered and `recv()` raises `TimeoutError`. |
+| Active player unresponsive | `turn_deadline` passes, detected by the event loop timer. |
 
 Each receive and send call is wrapped so that any of these paths raises `CLIENT_DISCONNECTED` instead of crashing the server loop.
 
 ---
 
-## 8. Concurrency Note for Sprint 2
+## 8. Concurrency Note
 
 The FSM assumes events are processed one at a time. Two `MOVE` messages arriving at nearly the same moment must not both be evaluated against the same board. Whatever concurrency model is chosen in Sprint 2, whether threads with a lock around the game context or a single `select()` loop, it must deliver events to the FSM serially. A disconnect that is detected while a move is being evaluated is queued and handled as soon as `EVALUATE_MOVE` finishes.
+
+Sprint 2 satisfies this with a single-threaded `selectors` event loop, which delivers events to the FSM strictly one at a time. See `concurrency_design.md`.

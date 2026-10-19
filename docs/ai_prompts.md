@@ -35,7 +35,10 @@ authoritative specification. Follow them exactly.
 Hard constraints:
 - Transport is TCP. Framing is newline-delimited JSON: each message is one
   compact JSON object (json.dumps with separators=(",", ":")) encoded as
-  UTF-8 and followed by exactly one b"\n". Senders use sendall().
+  UTF-8 and followed by exactly one b"\n". The server uses non-blocking
+  sockets in a single selectors event loop: it appends encoded frames to a
+  per-connection outbound buffer and flushes it with send() on EVENT_WRITE.
+  The server never calls sendall(). The client may use sendall().
 - Receivers keep a persistent per-connection bytearray buffer, append every
   recv() chunk, and extract frames only on b"\n". Never assume one recv()
   equals one message. Handle coalesced and fragmented frames.
@@ -59,7 +62,7 @@ Do not:
 - Write generic echo-server or chat-server scaffolding.
 - Use print() for diagnostics; use the logging module.
 - Swallow exceptions silently. ConnectionResetError, BrokenPipeError,
-  ConnectionAbortedError, and socket.timeout must be converted into a
+  ConnectionAbortedError, and TimeoutError must be converted into a
   CLIENT_DISCONNECTED event.
 
 If the specification is ambiguous or silent on something you need, stop and
@@ -135,12 +138,13 @@ fsm_specification.md. It holds the game context from section 2 and exposes:
   handle_connect(conn_id: str, msg: dict) -> list[Outbound]
   handle_move(conn_id: str, msg: dict) -> list[Outbound]
   handle_disconnect(conn_id: str) -> list[Outbound]
+  handle_tick(now: float) -> list[Outbound]   # intermission and turn timers
 
 Outbound is a dataclass (conn_id: str, message: dict, close_after: bool).
 GameFSM never touches sockets. It returns the messages to send and the
 caller performs the I/O.
 
-Every transition T1 through T19 in section 4 of the specification must
+Every transition T1 through T23 in section 4 of the specification must
 correspond to identifiable code. Add a comment with the transition ID
 (for example "# T14") at each one. Implement move checks in the order in
 section 5, and check for a win before checking for a draw.
