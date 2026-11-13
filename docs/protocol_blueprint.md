@@ -252,7 +252,7 @@ Sent by a client that is quitting intentionally, immediately before it closes it
 
 ### 3.9 GAME_OVER (Server to both Clients)
 
-Sent to both players at the end of every round, and to the remaining player when the series ends because the other player left. If `series_continues` is `true`, both connections stay open and the next round's `GAME_START` follows after a 3 second intermission. If it is `false`, the server closes the connection after sending.
+Sent to both players at the end of every round, and to the remaining player when the series ends because the other player left. When the series ends because the active player hit the 120 second turn limit, that player is still connected and also receives the same `GAME_OVER`. If `series_continues` is `true`, both connections stay open and the next round's `GAME_START` follows after a 3 second intermission. If it is `false`, the server closes the connection after sending.
 
 | Payload field | Type | Constraints |
 |---|---|---|
@@ -363,5 +363,5 @@ Incoming frames are checked in this order. The first failing check determines th
 2. Frame parses as JSON and the result is an object. Otherwise `MALFORMED_MESSAGE`.
 3. Exactly the four envelope fields are present with the types in Section 2. Otherwise `MALFORMED_MESSAGE`.
 4. `msg_type` is a type the client is allowed to send: `CONNECT`, `MOVE`, or `DISCONNECT`. Otherwise `UNKNOWN_MSG_TYPE`.
-5. The payload matches that message's schema in Section 3. Otherwise the message-specific code (`INVALID_ALIAS`, `INVALID_COORDINATES`, or `MALFORMED_MESSAGE`).
+5. The payload matches that message's schema in Section 3. Otherwise the message-specific code (`INVALID_ALIAS` or `MALFORMED_MESSAGE`). For `MOVE`, this check only rejects extra payload fields. The `row` and `col` values are checked in step 6, after `PLAYER_MISMATCH` and `OUT_OF_TURN`, following the order in Section 3.5.
 6. The message is legal in the current game state, as defined in `fsm_specification.md`. Otherwise the state-specific code (`NOT_IN_GAME`, `OUT_OF_TURN`, `CELL_OCCUPIED`, and so on).

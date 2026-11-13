@@ -35,7 +35,7 @@ The server is split into three layers so that only one layer ever touches socket
 |---|---|---|---|
 | Event loop | `server.py` | Owns the selector, accepts connections, reads and writes bytes, runs timers, closes sockets. | Yes, and it is the only layer that does. |
 | Framing and validation | `protocol/framing.py`, `protocol/messages.py` | Splits the byte stream into newline-delimited frames, decodes JSON, validates the envelope and payload schema. | No |
-| Game logic | `server/game_fsm.py` (`GameFSM`) | Implements the state machine in `fsm_specification.md`. Returns a list of `Outbound(conn_id, message, close_after)` items describing what to send. | No |
+| Game logic | `game/fsm.py` (`GameFSM`) | Implements the state machine in `fsm_specification.md`. Returns a list of `Outbound(conn_id, message, close_after)` items describing what to send. | No |
 
 The event loop calls `GameFSM` and then performs whatever I/O the returned `Outbound` list asks for. Because `GameFSM` never performs I/O itself, it can never block, and it can be unit tested without a network.
 

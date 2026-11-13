@@ -116,7 +116,8 @@ Write module protocol/messages.py containing:
    order and raise ProtocolError with the code for the first failure.
    When sender_is_client is True, only CONNECT, MOVE, and DISCONNECT are
    allowed; any other valid type raises UNKNOWN_MSG_TYPE.
-   For MOVE, row and col must be int and not bool, in range 0..2.
+   For MOVE, reject extra payload fields only. Coordinate values are
+   checked by the FSM after PLAYER_MISMATCH and OUT_OF_TURN.
    For CONNECT, alias must match ^[A-Za-z0-9_]{1,16}$.
 5. Builder functions, one per server message type, that return dicts
    matching section 3 of the blueprint exactly, for example
@@ -132,7 +133,7 @@ one failing case per error code that this module can raise.
 ### 3.3 Game State Machine
 
 ```text
-Write module server/game_fsm.py containing class GameFSM that implements
+Write module game/fsm.py containing class GameFSM that implements
 fsm_specification.md. It holds the game context from section 2 and exposes:
 
   handle_connect(conn_id: str, msg: dict) -> list[Outbound]

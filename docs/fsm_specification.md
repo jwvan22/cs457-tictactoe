@@ -150,7 +150,7 @@ Because the win check runs before the draw check, a ninth move that also complet
 | Player sends `DISCONNECT` mid-game | `PLAYER_TURN` | `GAME_OVER` `FORFEIT` to opponent, then cleanup. | `GAME_OVER` then `CLEANUP` |
 | Player's process exits without `DISCONNECT` (`recv()` returns `b""`) | `PLAYER_TURN` | Same as above. | `GAME_OVER` then `CLEANUP` |
 | Player crashes or CML link is cut (`ConnectionResetError`, `BrokenPipeError`, or keepalive failure) | `PLAYER_TURN` | Same as above. | `GAME_OVER` then `CLEANUP` |
-| Active player does not move within 120 seconds | `PLAYER_TURN` | Treated as a disconnect of that player. `FORFEIT` to the opponent. | `GAME_OVER` then `CLEANUP` |
+| Active player does not move within 120 seconds | `PLAYER_TURN` | Treated as a disconnect of that player. `FORFEIT` to the opponent. The timed-out player is still connected, so it receives the same `GAME_OVER` before its socket is closed. | `GAME_OVER` then `CLEANUP` |
 | Both players drop at the same time | `PLAYER_TURN` | First detected drop triggers `FORFEIT`. Sending `GAME_OVER` to the other also fails, so the server logs it and proceeds. | `GAME_OVER` then `CLEANUP` |
 | Third client connects during a game | `PLAYER_TURN` | Fatal `ERROR` `GAME_FULL` to the newcomer only. The running game is not affected. | `PLAYER_TURN` |
 | Round ends with a win or draw | `EVALUATE_MOVE` | Scores updated. Final `STATE_UPDATE` and `GAME_OVER` to both. Connections stay open. | `GAME_OVER`, then `GAME_START` after 3 seconds |
