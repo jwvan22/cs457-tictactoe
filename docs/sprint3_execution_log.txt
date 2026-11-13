@@ -1,0 +1,333 @@
+Sprint 3 Intermediate Gameplay Execution Log
+Project: cs457-tictactoe
+Environment: localhost (127.0.0.1), Python 3, one server and three client processes
+Generated with: python3 tools/run_demo.py -p 5555
+
+What this run shows
+  - Two clients connect at the same time and complete 7 accepted moves in round 1
+    and 2 in round 2 (requirement: at least 3 turns).
+  - Server-side turn enforcement: OUT_OF_TURN, CELL_OCCUPIED, INVALID_COORDINATES.
+  - Round 1 win, score update, 3 second intermission, round 2 with swapped marks.
+  - A third client is rejected with GAME_FULL while the series runs.
+  - A player quits with DISCONNECT and the opponent wins by forfeit.
+  - Server log lines tagged (T#) are FSM transitions from docs/fsm_specification.md.
+  - Keyboard input is listed at the end, because piped input is not echoed.
+
+==================== DNS FAILURE HANDLING ====================
+$ python3 client.py -i server.vanallen.edu -p 5555 -n Alice
+[ERROR] Unable to resolve DNS hostname 'server.vanallen.edu'.
+Please check your Cisco router DNS configuration ('ip dns server' / 'ip host') or verify domain spelling.
+[exit status 1]
+
+$ python3 client.py -i localhost -p 5999 -n Alice     (no server on 5999)
+[ERROR] Connection refused by localhost (127.0.0.1) port 5999.
+Is the server running and listening on that port?
+[exit status 1]
+
+$ python3 client.py -i localhost -p 80
+usage: client.py [-h] -i HOSTNAME -p PORT [-n NAME]
+client.py: error: argument -p/--port: 80 is out of range, use 1024 to 65535
+[exit status 2]
+
+================== SERVER ==================
+10:56:49 INFO    server: Listening on 0.0.0.0:5555
+10:56:49 INFO    game.fsm: FSM INIT -> WAITING_FOR_PLAYERS (T1)
+10:56:50 INFO    server: Accepted c1 127.0.0.1:40572
+10:56:50 INFO    game.fsm: FSM WAITING_FOR_PLAYERS stays (T3)
+10:56:50 INFO    game.fsm: c1 seated as Player_1 (Alice)
+10:56:50 INFO    server: Accepted c2 127.0.0.1:40576
+10:56:50 INFO    game.fsm: c2 seated as Player_2 (Bob)
+10:56:50 INFO    game.fsm: FSM WAITING_FOR_PLAYERS -> GAME_START (T7)
+10:56:50 INFO    game.fsm: FSM GAME_START -> PLAYER_TURN (T8)
+10:56:51 INFO    game.fsm: FSM PLAYER_TURN -> EVALUATE_MOVE (T10)
+10:56:51 INFO    game.fsm: FSM EVALUATE_MOVE -> PLAYER_TURN (T14)
+10:56:51 INFO    game.fsm: ERROR OUT_OF_TURN to c2: It is Player_1's turn
+10:56:51 INFO    game.fsm: FSM PLAYER_TURN -> EVALUATE_MOVE (T10)
+10:56:51 INFO    game.fsm: Player_1 (X) played row 1 col 1
+10:56:51 INFO    game.fsm: FSM EVALUATE_MOVE -> PLAYER_TURN (T15)
+10:56:51 INFO    game.fsm: FSM PLAYER_TURN -> EVALUATE_MOVE (T10)
+10:56:51 INFO    game.fsm: FSM EVALUATE_MOVE -> PLAYER_TURN (T14)
+10:56:51 INFO    game.fsm: ERROR CELL_OCCUPIED to c2: Cell (1, 1) is already taken
+10:56:52 INFO    game.fsm: FSM PLAYER_TURN -> EVALUATE_MOVE (T10)
+10:56:52 INFO    game.fsm: Player_2 (O) played row 0 col 0
+10:56:52 INFO    game.fsm: FSM EVALUATE_MOVE -> PLAYER_TURN (T15)
+10:56:52 INFO    game.fsm: FSM PLAYER_TURN -> EVALUATE_MOVE (T10)
+10:56:52 INFO    game.fsm: FSM EVALUATE_MOVE -> PLAYER_TURN (T14)
+10:56:52 INFO    game.fsm: ERROR INVALID_COORDINATES to c1: row and col must be integers from 0 to 2
+10:56:53 INFO    game.fsm: FSM PLAYER_TURN -> EVALUATE_MOVE (T10)
+10:56:53 INFO    game.fsm: Player_1 (X) played row 0 col 2
+10:56:53 INFO    game.fsm: FSM EVALUATE_MOVE -> PLAYER_TURN (T15)
+10:56:53 INFO    game.fsm: FSM PLAYER_TURN -> EVALUATE_MOVE (T10)
+10:56:53 INFO    game.fsm: Player_2 (O) played row 2 col 2
+10:56:53 INFO    game.fsm: FSM EVALUATE_MOVE -> PLAYER_TURN (T15)
+10:56:54 INFO    game.fsm: FSM PLAYER_TURN -> EVALUATE_MOVE (T10)
+10:56:54 INFO    game.fsm: Player_1 (X) played row 2 col 0
+10:56:54 INFO    game.fsm: FSM EVALUATE_MOVE -> GAME_OVER (T16)
+10:56:54 INFO    game.fsm: FSM GAME_OVER stays (T18)
+10:56:54 INFO    server: Accepted c3 127.0.0.1:40586
+10:56:54 INFO    game.fsm: Rejecting c3, game full (T23)
+10:56:54 INFO    game.fsm: ERROR GAME_FULL to c3: Two players are already seated
+10:56:54 INFO    server: Closed c3 127.0.0.1:40586
+10:56:57 INFO    game.fsm: FSM GAME_OVER -> GAME_START (T21)
+10:56:57 INFO    game.fsm: FSM GAME_START -> PLAYER_TURN (T8)
+10:56:58 INFO    game.fsm: FSM PLAYER_TURN -> EVALUATE_MOVE (T10)
+10:56:58 INFO    game.fsm: Player_2 (X) played row 0 col 0
+10:56:58 INFO    game.fsm: FSM EVALUATE_MOVE -> PLAYER_TURN (T15)
+10:56:58 INFO    game.fsm: FSM PLAYER_TURN -> EVALUATE_MOVE (T10)
+10:56:58 INFO    game.fsm: Player_1 (O) played row 1 col 1
+10:56:58 INFO    game.fsm: FSM EVALUATE_MOVE -> PLAYER_TURN (T15)
+10:56:58 INFO    server: c2 127.0.0.1:40576 sent DISCONNECT (user quit)
+10:56:58 INFO    game.fsm: FSM PLAYER_TURN -> GAME_OVER (T13)
+10:56:58 INFO    game.fsm: FSM GAME_OVER -> CLEANUP (T20)
+10:56:58 INFO    game.fsm: Series over, final scores {'Player_1': 2, 'Player_2': 0, 'draws': 0}
+10:56:58 INFO    game.fsm: FSM CLEANUP -> WAITING_FOR_PLAYERS (T19)
+10:56:58 INFO    server: Closed c2 127.0.0.1:40576
+10:56:58 INFO    server: Closed c1 127.0.0.1:40572
+10:57:00 INFO    server: Shutting down
+[exit status 0]
+
+================== CLIENT 1: Alice ==================
+Connected to localhost (127.0.0.1) port 5555 as Alice.
+Connected. Waiting for an opponent...
+
+=== Round 1: Alice (X) vs Bob ===
+You are Player_1. X moves first, so you start.
+
+      0   1   2
+  0     |   |  
+     ---+---+---
+  1     |   |  
+     ---+---+---
+  2     |   |  
+Round 1  |  Score: Alice 0, Bob 0, draws 0
+
+>> Your turn (X). Enter row and column (for example: 1 2), or q to quit: 
+You played row 1, column 1.
+      0   1   2
+  0     |   |  
+     ---+---+---
+  1     | X |  
+     ---+---+---
+  2     |   |  
+Round 1  |  Score: Alice 0, Bob 0, draws 0
+
+.. Waiting for Bob to move...
+
+Bob played row 0, column 0.
+      0   1   2
+  0   O |   |  
+     ---+---+---
+  1     | X |  
+     ---+---+---
+  2     |   |  
+Round 1  |  Score: Alice 0, Bob 0, draws 0
+
+>> Your turn (X). Enter row and column (for example: 1 2), or q to quit: 
+[server] INVALID_COORDINATES: row and col must be integers from 0 to 2
+
+>> Your turn (X). Enter row and column (for example: 1 2), or q to quit: 
+You played row 0, column 2.
+      0   1   2
+  0   O |   | X
+     ---+---+---
+  1     | X |  
+     ---+---+---
+  2     |   |  
+Round 1  |  Score: Alice 0, Bob 0, draws 0
+
+.. Waiting for Bob to move...
+
+Bob played row 2, column 2.
+      0   1   2
+  0   O |   | X
+     ---+---+---
+  1     | X |  
+     ---+---+---
+  2     |   | O
+Round 1  |  Score: Alice 0, Bob 0, draws 0
+
+>> Your turn (X). Enter row and column (for example: 1 2), or q to quit: 
+You played row 2, column 0.
+      0   1   2
+  0   O |   | X
+     ---+---+---
+  1     | X |  
+     ---+---+---
+  2   X |   | O
+Round 1  |  Score: Alice 1, Bob 0, draws 0
+
+*** You win! (Player_1 completed a line) ***
+Round 1  |  Score: Alice 1, Bob 0, draws 0
+Next round starts in 3 seconds...
+
+=== Round 2: Alice (O) vs Bob ===
+You are Player_1. X moves first, so Bob starts.
+
+      0   1   2
+  0     |   |  
+     ---+---+---
+  1     |   |  
+     ---+---+---
+  2     |   |  
+Round 2  |  Score: Alice 1, Bob 0, draws 0
+
+.. Waiting for Bob to move...
+
+Bob played row 0, column 0.
+      0   1   2
+  0   X |   |  
+     ---+---+---
+  1     |   |  
+     ---+---+---
+  2     |   |  
+Round 2  |  Score: Alice 1, Bob 0, draws 0
+
+>> Your turn (O). Enter row and column (for example: 1 2), or q to quit: 
+You played row 1, column 1.
+      0   1   2
+  0   X |   |  
+     ---+---+---
+  1     | O |  
+     ---+---+---
+  2     |   |  
+Round 2  |  Score: Alice 1, Bob 0, draws 0
+
+.. Waiting for Bob to move...
+
+*** You win! (Player_2 disconnected) ***
+Round 2  |  Score: Alice 2, Bob 0, draws 0
+Series over. Thanks for playing.
+[exit status 0]
+
+================== CLIENT 2: Bob ==================
+Connected to localhost (127.0.0.1) port 5555 as Bob.
+
+=== Round 1: Bob (O) vs Alice ===
+You are Player_2. X moves first, so Alice starts.
+
+      0   1   2
+  0     |   |  
+     ---+---+---
+  1     |   |  
+     ---+---+---
+  2     |   |  
+Round 1  |  Score: Bob 0, Alice 0, draws 0
+
+.. Waiting for Alice to move...
+
+[server] OUT_OF_TURN: It is Player_1's turn
+
+.. Waiting for Alice to move...
+
+Alice played row 1, column 1.
+      0   1   2
+  0     |   |  
+     ---+---+---
+  1     | X |  
+     ---+---+---
+  2     |   |  
+Round 1  |  Score: Bob 0, Alice 0, draws 0
+
+>> Your turn (O). Enter row and column (for example: 1 2), or q to quit: 
+[server] CELL_OCCUPIED: Cell (1, 1) is already taken
+
+>> Your turn (O). Enter row and column (for example: 1 2), or q to quit: 
+You played row 0, column 0.
+      0   1   2
+  0   O |   |  
+     ---+---+---
+  1     | X |  
+     ---+---+---
+  2     |   |  
+Round 1  |  Score: Bob 0, Alice 0, draws 0
+
+.. Waiting for Alice to move...
+
+Alice played row 0, column 2.
+      0   1   2
+  0   O |   | X
+     ---+---+---
+  1     | X |  
+     ---+---+---
+  2     |   |  
+Round 1  |  Score: Bob 0, Alice 0, draws 0
+
+>> Your turn (O). Enter row and column (for example: 1 2), or q to quit: 
+You played row 2, column 2.
+      0   1   2
+  0   O |   | X
+     ---+---+---
+  1     | X |  
+     ---+---+---
+  2     |   | O
+Round 1  |  Score: Bob 0, Alice 0, draws 0
+
+.. Waiting for Alice to move...
+
+Alice played row 2, column 0.
+      0   1   2
+  0   O |   | X
+     ---+---+---
+  1     | X |  
+     ---+---+---
+  2   X |   | O
+Round 1  |  Score: Bob 0, Alice 1, draws 0
+
+*** Alice wins. (Player_1 completed a line) ***
+Round 1  |  Score: Bob 0, Alice 1, draws 0
+Next round starts in 3 seconds...
+
+=== Round 2: Bob (X) vs Alice ===
+You are Player_2. X moves first, so you start.
+
+      0   1   2
+  0     |   |  
+     ---+---+---
+  1     |   |  
+     ---+---+---
+  2     |   |  
+Round 2  |  Score: Bob 0, Alice 1, draws 0
+
+>> Your turn (X). Enter row and column (for example: 1 2), or q to quit: 
+You played row 0, column 0.
+      0   1   2
+  0   X |   |  
+     ---+---+---
+  1     |   |  
+     ---+---+---
+  2     |   |  
+Round 2  |  Score: Bob 0, Alice 1, draws 0
+
+.. Waiting for Alice to move...
+
+Alice played row 1, column 1.
+      0   1   2
+  0   X |   |  
+     ---+---+---
+  1     | O |  
+     ---+---+---
+  2     |   |  
+Round 2  |  Score: Bob 0, Alice 1, draws 0
+
+>> Your turn (X). Enter row and column (for example: 1 2), or q to quit: 
+You left the game.
+[exit status 0]
+
+================== CLIENT 3: Carol ==================
+Connected to localhost (127.0.0.1) port 5555 as Carol.
+
+[server] GAME_FULL: Two players are already seated
+[exit status 1]
+
+================== KEYBOARD INPUT, IN ORDER ==================
+[Bob typed] 1 1
+[Alice typed] 1 1
+[Bob typed] 1 1
+[Bob typed] 0 0
+[Alice typed] 3 0
+[Alice typed] 0 2
+[Bob typed] 2 2
+[Alice typed] 2 0
+[Bob typed] 0 0
+[Alice typed] 1 1
+[Bob typed] quit
